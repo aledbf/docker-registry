@@ -7,6 +7,7 @@ import time
 
 import flask
 import gevent
+import requests
 
 from docker_registry.core import compat
 from docker_registry.core import exceptions
@@ -18,10 +19,19 @@ from .app import app
 from .lib import mirroring
 from .lib import signals
 
-
 store = storage.load()
 logger = logging.getLogger(__name__)
 RE_USER_AGENT = re.compile('([^\s/]+)/([^\s/]+)')
+
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=1000,
+    pool_maxsize=1000,
+    max_retries=5,
+    pool_block=False
+)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 
 
 @app.route('/v1/repositories/<path:repository>/properties', methods=['PUT'])
@@ -236,6 +246,131 @@ def _delete_tag(namespace, repository, tag):
     return toolkit.response()
 
 
+def _import_repository(src_image, namespace, repository):
+    # strip tag from src_image if present
+    src_tag = None
+    if ':' in src_image:
+        if '/' not in src_image[src_image.rfind(':') + 1:]:
+            src_tag = src_image[src_image.rfind(':') + 1:]
+            src_image = src_image[:src_image.rfind(':')]
+
+    src_index, src_repository = toolkit.resolve_repository_name(src_image)
+    headers = None
+
+    # check if src_index starts with a scheme; mandatory for requests library
+    if not src_index.startswith('http'):
+        src_index = 'http://' + src_index
+
+    tags_url = '{0}/v1/repositories/{1}/tags'.format(
+        src_index,
+        src_repository)
+    tags_resp = requests.get(tags_url, timeout=(5, 30))
+    images_resp = requests.get(
+        '{0}/v1/repositories/{1}/images'.format(
+            src_index,
+            src_repository
+        ),
+        # this is required if we are authenticating against the public index
+        # because we need the token returned in the header to retrieve images
+        headers={'X-Docker-Token': 'true'},
+        timeout=(5, 30)
+    )
+
+    if images_resp and tags_resp:
+        # import images
+        images = json.loads(images_resp.content)
+        tags = json.loads(tags_resp.content)
+        if src_index == toolkit.public_index_url():
+            tags = _get_public_index_tags(tags_resp, images)
+
+        if src_index == toolkit.public_index_url():
+            # DockerHub requires a token even on unauthenticated requests
+            token = images_resp.headers['x-docker-token']
+            headers = {'Authorization': 'Token {0}'.format(token)}
+
+        if src_tag is not None:
+            tags = {src_tag: tags[src_tag]}
+            # retrieve ancestry from the tag's parent image
+            if src_index == toolkit.public_index_url():
+                req_url = toolkit.public_cdn_url()
+            else:
+                req_url = src_index
+            images = [{'id': image} for image in json.loads(
+                requests.get('{0}/v1/images/{1}/ancestry'.format(
+                    req_url,
+                    tags[src_tag]),
+                    headers=headers,
+                    timeout=(5, 30)
+                ).content
+            )]
+
+        if src_index == toolkit.public_index_url():
+            image_list = []
+            for image in images:
+                image_list.append({'id': image['id']})
+            images = image_list
+        logger.debug('images={0}'.format(images))
+        for image in images:
+            logger.debug("Downloading image {0} from {1}".format(
+                image['id'],
+                src_index)
+            )
+            if src_index == toolkit.public_index_url():
+                # docker images are stored on the CDN
+                _import_image(toolkit.public_cdn_url(), image['id'], headers)
+            else:
+                _import_image(src_index, image['id'], headers)
+        store.put_content(store.index_images_path(namespace, repository),
+                          json.dumps(images))
+        # import tags
+        logger.debug('tags={0}'.format(tags))
+        for tag, image in tags.items():
+            logger.debug("Downloading tag {0} from {1}".format(tag, src_index))
+            store.put_content(store.tag_path(namespace, repository, tag),
+                              image)
+    else:
+        raise Exception("did not receive response from remote")
+
+
+def _get_public_index_tags(tags_resp, images):
+    tags = {}
+    for tag in json.loads(tags_resp.content):
+        # public index shortens the image ID on /tags, so we need the
+        # fully-qualified name
+        for image in images:
+            if image['id'].startswith(tag['layer']):
+                tag['layer'] = image['id']
+            tags[tag['name']] = tag['layer']
+    return tags
+
+
+def _import_image(source, image, headers=None):
+    # do nothing if the image already exists
+    if store.exists(store.image_layer_path(image)):
+        logger.debug('image {0} already exists, skipping'.format(image))
+        return
+
+    # import layers
+    resp = requests.get('{0}/v1/images/{1}/layer'.format(source, image),
+                        headers=headers,
+                        timeout=(5, 30))
+    if resp:
+        store.put_content(store.image_layer_path(image), resp.content)
+    # import JSON
+    resp = requests.get('{0}/v1/images/{1}/json'.format(source, image),
+                        headers=headers,
+                        timeout=(5, 30))
+    if resp:
+        store.put_content(store.image_json_path(image), resp.content)
+    # import ancestry
+    resp = requests.get('{0}/v1/images/{1}/ancestry'.format(source, image),
+                        headers=headers,
+                        timeout=(5, 30))
+    if resp:
+        store.put_content(store.image_ancestry_path(image), resp.content)
+
+
+
 @app.route('/v1/repositories/<path:repository>/', methods=['DELETE'])
 @app.route('/v1/repositories/<path:repository>/tags', methods=['DELETE'])
 @toolkit.parse_repository_name
@@ -255,18 +390,31 @@ def delete_repository(namespace, repository):
     """
     logger.debug("[delete_repository] namespace={0}; repository={1}".format(
                  namespace, repository))
-    try:
-        for tag_name, tag_content in get_tags(
-                namespace=namespace, repository=repository).items():
-            delete_tag(
-                namespace=namespace, repository=repository, tag=tag_name)
-        # TODO(wking): remove images, but may need refcounting
-        store.remove(store.repository_path(
-            namespace=namespace, repository=repository))
-    except exceptions.FileNotFoundError:
-        return toolkit.api_error('Repository not found', 404)
+
+
+    src_image = flask.request.form.get('src')
+    if flask.request.method == 'POST':
+        try:
+            _import_repository(
+                src_image=src_image,
+                namespace=namespace,
+                repository=repository,
+            )
+        except Exception as e:
+            return toolkit.api_error(e, 500)
     else:
-        sender = flask.current_app._get_current_object()
-        signals.repository_deleted.send(
-            sender, namespace=namespace, repository=repository)
+        try:
+            for tag_name, tag_content in get_tags(
+                    namespace=namespace, repository=repository):
+                delete_tag(
+                    namespace=namespace, repository=repository, tag=tag_name)
+            # TODO(wking): remove images, but may need refcounting
+            store.remove(store.repository_path(
+                namespace=namespace, repository=repository))
+        except exceptions.FileNotFoundError:
+            return toolkit.api_error('Repository not found', 404)
+        else:
+            sender = flask.current_app._get_current_object()
+            signals.repository_deleted.send(
+                sender, namespace=namespace, repository=repository)
     return toolkit.response()
