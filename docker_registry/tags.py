@@ -370,7 +370,6 @@ def _import_image(source, image, headers=None):
         store.put_content(store.image_ancestry_path(image), resp.content)
 
 
-
 @app.route('/v1/repositories/<path:repository>/', methods=['DELETE'])
 @app.route('/v1/repositories/<path:repository>/tags', methods=['DELETE'])
 @toolkit.parse_repository_name
@@ -390,7 +389,6 @@ def delete_repository(namespace, repository):
     """
     logger.debug("[delete_repository] namespace={0}; repository={1}".format(
                  namespace, repository))
-
 
     src_image = flask.request.form.get('src')
     if flask.request.method == 'POST':

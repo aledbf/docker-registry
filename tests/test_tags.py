@@ -8,7 +8,7 @@ from docker_registry.core import compat
 json = compat.json
 
 
-def mock_requests_get_private_registry(path, headers=None):
+def mock_requests_get_private_registry(path, headers=None, timeout=None):
     resp = requests.Response()
     resp.status_code = 200
     resp._content_consumed = True
