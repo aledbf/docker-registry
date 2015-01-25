@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 _re_docker_version = re.compile('docker/([^\s]+)')
 _re_authorization = re.compile(r'(\w+)[:=][\s"]?([^",]+)"?')
 
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=1000,
+    pool_maxsize=1000,
+    max_retries=5,
+    pool_block=False
+)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+requests = session
+
 
 class DockerVersion(distutils.version.StrictVersion):
 
