@@ -10,7 +10,7 @@ import string
 import urllib
 
 import flask
-import requests
+import requests as Requests
 import rsa
 
 from docker_registry.core import compat
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 _re_docker_version = re.compile('docker/([^\s]+)')
 _re_authorization = re.compile(r'(\w+)[:=][\s"]?([^",]+)"?')
 
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
+session = Requests.Session()
+adapter = Requests.adapters.HTTPAdapter(
     pool_connections=1000,
     pool_maxsize=1000,
     max_retries=5,
@@ -59,7 +59,7 @@ class SocketReader(object):
         return self.iterate()
 
     def iterate(self, chunk_size=-1):
-        if isinstance(self._fp, requests.Response):
+        if isinstance(self._fp, Requests.Response):
             if chunk_size == -1:
                 chunk_size = 1024
             for chunk in self._fp.iter_content(chunk_size):

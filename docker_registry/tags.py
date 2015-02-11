@@ -6,7 +6,7 @@ import re
 import time
 
 import flask
-import requests
+import requests as Requests
 
 from docker_registry.core import compat
 from docker_registry.core import exceptions
@@ -23,8 +23,8 @@ store = storage.load()
 logger = logging.getLogger(__name__)
 RE_USER_AGENT = re.compile('([^\s/]+)/([^\s/]+)')
 
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
+session = Requests.Session()
+adapter = Requests.adapters.HTTPAdapter(
     pool_connections=1000,
     pool_maxsize=1000,
     max_retries=5,

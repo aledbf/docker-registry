@@ -7,8 +7,10 @@ import requests
 from docker_registry.core import compat
 json = compat.json
 
+session = requests.Session()
 
-def mock_requests_get_private_registry(path, headers=None, timeout=None):
+
+def mock_requests_get_private_registry(path, headers=None):
     resp = requests.Response()
     resp.status_code = 200
     resp._content_consumed = True
@@ -34,7 +36,7 @@ def mock_requests_get_private_registry(path, headers=None, timeout=None):
     return resp
 
 
-def mock_requests_get_public_registry(path, headers=None, timeout=None):
+def mock_requests_get_public_registry(path, headers=None):
     """branch logic for DockerHub, as their endpoints are not the same."""
     resp = requests.Response()
     resp.status_code = 200
@@ -190,7 +192,7 @@ class TestTags(base.TestCase):
         repos_name = '{0}%$_-test'.format(self.gen_random_string(5))
         self.test_simple(repos_name)
 
-    @mock.patch('requests.get', mock_requests_get_private_registry)
+    @mock.patch(session, 'get', mock_requests_get_private_registry)
     def test_import_repository_from_private_registry(self):
         data = {
             'src': 'example.com/othernamespace/test',
@@ -232,7 +234,7 @@ class TestTags(base.TestCase):
             [{"id": "cafebabe0146"}]
         )
 
-    @mock.patch('requests.get', mock_requests_get_private_registry)
+    @mock.patch(session, 'get', mock_requests_get_private_registry)
     def test_import_repository_tag_from_private_registry(self):
         data = {
             'src': 'example.com/othernamespace/test:latest',
@@ -274,7 +276,7 @@ class TestTags(base.TestCase):
             [{"id": "cafebabe0146"}]
         )
 
-    @mock.patch('requests.get', mock_requests_get_public_registry)
+    @mock.patch(session, 'get', mock_requests_get_public_registry)
     def test_import_repository_from_public_index(self):
         data = {
             'src': 'testing3/test',
@@ -316,7 +318,7 @@ class TestTags(base.TestCase):
             [{"id": "asdfqwerty"}]
         )
 
-    @mock.patch('requests.get', mock_requests_get_public_registry)
+    @mock.patch(session, 'get', mock_requests_get_public_registry)
     def test_import_repository_tag_from_public_index(self):
         data = {
             'src': 'testing3/test:latest',
